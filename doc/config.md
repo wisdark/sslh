@@ -65,13 +65,13 @@ Configuration goes like this on the server side, using `stunnel3`:
   * `-f` for foreground/debugging
   * `-p` for specifying the key and certificate
   * `-d` for specifying which interface and port
-	we're listening to for incoming connexions
+	we're listening to for incoming connections
   * `-l` summons `sslh` in inetd mode.
 
 * sslh options:
   * `-i` for inetd mode
-  * `--http` to forward HTTP connexions to port 80,
-	and SSH connexions to port 22.
+  * `--http` to forward HTTP connections to port 80,
+	and SSH connections to port 22.
 
 Capabilities support
 --------------------
@@ -189,7 +189,7 @@ UDP
 ---
 
 `sslh` can perform demultiplexing on UDP packets as well.
-This only works with `sslh-select` (it is not possible to
+This does not work with `sslh-fork` (it is not possible to
 support UDP with a forking model). Specify a listening
 address and target protocols with `is_udp: true`. `sslh`
 will wait for incoming UDP packets, run the probes in the

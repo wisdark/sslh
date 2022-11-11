@@ -33,6 +33,7 @@
 
 static int is_ssh_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_item*);
 static int is_openvpn_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_item*);
+static int is_wireguard_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_item*);
 static int is_tinc_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_item*);
 static int is_xmpp_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_item*);
 static int is_http_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_item*);
@@ -40,6 +41,8 @@ static int is_tls_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_
 static int is_adb_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_item*);
 static int is_socks5_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_item*);
 static int is_syslog_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_item*);
+static int is_teamspeak_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_item*);
+static int is_msrdp_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_item*);
 static int is_true(const char *p, ssize_t len, struct sslhcfg_protocols_item* proto) { return 1; }
 
 /* Table of protocols that have a built-in probe
@@ -48,6 +51,7 @@ static struct protocol_probe_desc builtins[] = {
     /* description  probe  */
     { "ssh",        is_ssh_protocol},
     { "openvpn",    is_openvpn_protocol },
+    { "wireguard",  is_wireguard_protocol },
     { "tinc",       is_tinc_protocol },
     { "xmpp",       is_xmpp_protocol },
     { "http",       is_http_protocol },
@@ -55,6 +59,8 @@ static struct protocol_probe_desc builtins[] = {
     { "adb",        is_adb_protocol },
     { "socks5",     is_socks5_protocol },
     { "syslog",     is_syslog_protocol },
+    { "teamspeak",  is_teamspeak_protocol },
+    { "msrdp",      is_msrdp_protocol },
     { "anyprot",    is_true }
 };
 
@@ -112,7 +118,7 @@ void hexdump(msg_info msg_info, const char *mem, unsigned int len)
             }
             str[c++] = '\n';
             str[c++] = 0;
-            print_message(msg_info, str);
+            print_message(msg_info, "%s", str);
             c = 0;
         }
     }
@@ -137,15 +143,66 @@ static int is_ssh_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_
  * http://www.fengnet.com/book/vpns%20illustrated%20tunnels%20%20vpnsand%20ipsec/ch08lev1sec5.html
  * and OpenVPN ssl.c, ssl.h and options.c
  */
+#define OVPN_OPCODE_MASK 0xF8
+#define OVPN_CONTROL_HARD_RESET_CLIENT_V1  (0x01 << 3)
+#define OVPN_CONTROL_HARD_RESET_CLIENT_V2  (0x07 << 3)
+#define OVPN_HMAC_128 16
+#define OVPN_HMAC_160 20
+#define OVPN_HARD_RESET_PACKET_ID_OFFSET(hmac_size) (9 + hmac_size)
 static int is_openvpn_protocol (const char*p,ssize_t len, struct sslhcfg_protocols_item* proto)
 {
     int packet_len;
 
-    if (len < 2)
-        return PROBE_AGAIN;
+    if (proto->is_udp == 0)
+    {
+        if (len < 2)
+            return PROBE_AGAIN;
 
-    packet_len = ntohs(*(uint16_t*)p);
-    return packet_len == len - 2;
+        packet_len = ntohs(*(uint16_t*)p);
+        return packet_len == len - 2;
+    } else {
+        if (len < 1)
+            return PROBE_NEXT;
+
+        if ((p[0] & OVPN_OPCODE_MASK) != OVPN_CONTROL_HARD_RESET_CLIENT_V1 &&
+            (p[0] & OVPN_OPCODE_MASK) != OVPN_CONTROL_HARD_RESET_CLIENT_V2)
+            return PROBE_NEXT;
+
+        /* The detection pattern above may not be reliable enough.
+         * Check the packet id: OpenVPN sents five initial packets
+         * whereas the packet id is increased with every transmitted datagram.
+         */
+
+        if (len <= OVPN_HARD_RESET_PACKET_ID_OFFSET(OVPN_HMAC_128))
+            return PROBE_NEXT;
+
+        if (ntohl(*(uint32_t*)(p + OVPN_HARD_RESET_PACKET_ID_OFFSET(OVPN_HMAC_128))) <= 5u)
+            return PROBE_MATCH;
+
+        if (len <= OVPN_HARD_RESET_PACKET_ID_OFFSET(OVPN_HMAC_160))
+            return PROBE_NEXT;
+
+        if (ntohl(*(uint32_t*)(p + OVPN_HARD_RESET_PACKET_ID_OFFSET(OVPN_HMAC_160))) <= 5u)
+            return PROBE_MATCH;
+
+        return PROBE_NEXT;
+    }
+}
+
+static int is_wireguard_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_item* proto)
+{
+    if (proto->is_udp == 0)
+        return PROBE_NEXT;
+
+    // Handshake Init: 148 bytes
+    if (len != 148)
+        return PROBE_NEXT;
+
+    // Handshake Init: p[0] = 0x01, p[1..3] = 0x000000 (reserved)
+    if (ntohl(*(uint32_t*)p) != 0x01000000)
+        return PROBE_NEXT;
+
+    return PROBE_MATCH;
 }
 
 /* Is the buffer the beginning of a tinc connections?
@@ -318,6 +375,27 @@ static int is_syslog_protocol(const char *p, ssize_t len, struct sslhcfg_protoco
     return 0;
 }
 
+static int is_teamspeak_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_item* proto)
+{
+    if (len < 8)
+        return PROBE_NEXT;
+
+    return !strncmp(p, "TS3INIT1", len);
+}
+
+static int is_msrdp_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_item* proto)
+{
+    char version;
+    char packet_len;
+    if (len < 7)
+        return PROBE_NEXT;
+    version=*p;
+    if (version!=0x03)
+        return 0;
+    packet_len = ntohs(*(uint16_t*)(p+2));
+    return packet_len == len;
+}
+
 static int regex_probe(const char *p, ssize_t len, struct sslhcfg_protocols_item* proto)
 {
 #ifdef ENABLE_REGEX
@@ -395,6 +473,13 @@ int probe_buffer(char* buf, int len,
         return PROBE_AGAIN;
 
     /* Everything failed: match the last one */
+
+    if (proto_len == 0) {
+        /* This should be caught by configuration sanity checks, but just in
+         * case, die gracefully rather than segfaulting */
+        print_message(msg_int_error, "Received traffic on transport that has no target\n");
+        exit(0);
+    }
     *proto_out = proto_in[proto_len-1];
     return PROBE_MATCH;
 }

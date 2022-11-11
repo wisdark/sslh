@@ -52,6 +52,9 @@ static void watchers_init(watchers** w, struct listen_endpoint* listen_sockets,
                           int num_addr_listen)
 {
     *w = malloc(sizeof(**w));
+    CHECK_ALLOC(*w, "malloc");
+
+    memset(*w, 0, sizeof(**w));
     FD_ZERO(&(*w)->fds_r);
     FD_ZERO(&(*w)->fds_w);
 
@@ -143,9 +146,9 @@ void main_loop(struct listen_endpoint listen_sockets[], int num_addr_listen)
         memcpy(&readfds, &fd_info.watchers->fds_r, sizeof(readfds));
         memcpy(&writefds, &fd_info.watchers->fds_w, sizeof(writefds));
 
-        print_message(msg_fd, "selecting... max_fd=%d num_probing=%d\n", 
+        print_message(msg_fd, "selecting... max_fd=%d num_probing=%d\n",
                                           fd_info.watchers->max_fd, fd_info.num_probing);
-        res = select(fd_info.watchers->max_fd, &readfds, &writefds, 
+        res = select(fd_info.watchers->max_fd + 1, &readfds, &writefds,
                      NULL, fd_info.num_probing ? &tv : NULL);
         if (res < 0)
             perror("select");
@@ -165,7 +168,10 @@ void main_loop(struct listen_endpoint listen_sockets[], int num_addr_listen)
 
         /* Check all sockets for write activity */
         for (i = 0; i < fd_info.watchers->max_fd; i++) {
-            if (FD_ISSET(i, &writefds)) {
+            /* Check if it's active AND currently monitored (if a connection
+             * died, it gets tidied, which closes both sockets, but writefs does
+             * not know about that */
+            if (FD_ISSET(i, &writefds) && FD_ISSET(i, &fd_info.watchers->fds_w)) {
                 cnx_write_process(&fd_info, i);
             }
         }

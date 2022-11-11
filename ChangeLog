@@ -1,4 +1,4 @@
-vNEXT:
+v2.0:
 	New sslh-ev: this is functionaly equivalent to
 	sslh-select (mono-process, only forks for specified
 	protocols), but based on libev, which should make it
@@ -24,6 +24,8 @@ vNEXT:
 	requests that target names are resolved at each
 	connection instead of at startup. Useful for dynamic
 	DNS situations. (Paul Schroeder/milkpirate)
+
+	New probe for MSRDP (akappner).
 
 v1.22: 17AUG2021
 	sslh-select now supports UDP protocols.
