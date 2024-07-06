@@ -173,13 +173,13 @@ static int is_openvpn_protocol (const char*p,ssize_t len, struct sslhcfg_protoco
          * whereas the packet id is increased with every transmitted datagram.
          */
 
-        if (len <= OVPN_HARD_RESET_PACKET_ID_OFFSET(OVPN_HMAC_128))
+        if (len <= OVPN_HARD_RESET_PACKET_ID_OFFSET(OVPN_HMAC_128) + sizeof(uint32_t))
             return PROBE_NEXT;
 
         if (ntohl(*(uint32_t*)(p + OVPN_HARD_RESET_PACKET_ID_OFFSET(OVPN_HMAC_128))) <= 5u)
             return PROBE_MATCH;
 
-        if (len <= OVPN_HARD_RESET_PACKET_ID_OFFSET(OVPN_HMAC_160))
+        if (len <= OVPN_HARD_RESET_PACKET_ID_OFFSET(OVPN_HMAC_160) + sizeof(uint32_t))
             return PROBE_NEXT;
 
         if (ntohl(*(uint32_t*)(p + OVPN_HARD_RESET_PACKET_ID_OFFSET(OVPN_HMAC_160))) <= 5u)
@@ -323,7 +323,7 @@ static int is_adb_protocol(const char *p, ssize_t len, struct sslhcfg_protocols_
     if (len < min_data_packet_size + sizeof(empty_message))
         return PROBE_AGAIN;
 
-    if (memcmp(&p[0], empty_message, sizeof(empty_message)))
+    if (memcmp(&p[0], empty_message, sizeof(empty_message)) != 0)
         return PROBE_NEXT;
 
     return probe_adb_cnxn_message(&p[sizeof(empty_message)]);

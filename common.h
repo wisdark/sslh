@@ -5,6 +5,7 @@
  * enough for the macros to adapt (http://support.microsoft.com/kb/111855)
  */
 #ifdef __CYGWIN__
+#undef FD_SETSIZE
 #define FD_SETSIZE 4096
 #endif
 
@@ -112,7 +113,7 @@ struct connection {
     struct queue q[2];
 
     /* SOCK_DGRAM */
-    struct sockaddr client_addr; /* Contains the remote client address */
+    struct sockaddr_storage client_addr; /* Contains the remote client address */
     socklen_t addrlen;
 
     int local_endpoint; /* Contains the local address */
@@ -171,7 +172,7 @@ int resolve_split_name(struct addrinfo **out, char* hostname, char* port);
 
 int start_listen_sockets(struct listen_endpoint *sockfd[]);
 
-int defer_write(struct queue *q, void* data, int data_size);
+int defer_write(struct queue *q, void* data, ssize_t data_size);
 int flush_deferred(struct queue *q);
 
 extern struct sslhcfg_item cfg;
@@ -182,5 +183,9 @@ extern const char* server_type;
 void start_shoveler(int);
 
 void main_loop(struct listen_endpoint *listen_sockets, int num_addr_listen);
+
+/* landlock.c */
+void setup_landlock(void);
+
 
 #endif

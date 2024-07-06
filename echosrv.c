@@ -1,6 +1,6 @@
 /* echosrv: a simple line echo server with optional prefix adding.
  *
- * echsrv --listen localhost6:1234 --prefix "ssl: "
+ * echosrv --listen localhost6:1234 --prefix "ssl: "
  *
  * This will bind to 1234, and echo every line pre-pending "ssl: ". This is
  * used for testing: we create several such servers with different prefixes,
@@ -62,9 +62,10 @@ void check_res_dump(int res, struct addrinfo *addr, char* syscall)
 
 void start_echo(int fd)
 {
-    int res;
+    ssize_t res;
     char buffer[1 << 20];
-    int ret, prefix_len;
+    ssize_t ret;
+    size_t prefix_len;
     int first = 1;
 
     prefix_len = strlen(cfg.prefix);
@@ -151,7 +152,7 @@ void udp_echo(struct listen_endpoint* listen_socket)
 
     while (1) {
         addrlen = sizeof(src_addr);
-        size_t len = recvfrom(listen_socket->socketfd, 
+        ssize_t len = recvfrom(listen_socket->socketfd,
                            data + prefix_len,
                            sizeof(data) - prefix_len,
                            0,
@@ -162,11 +163,11 @@ void udp_echo(struct listen_endpoint* listen_socket)
             perror("recvfrom");
         }
         *(data + prefix_len + len) = 0;
-        fprintf(stderr, "%ld: %s\n", len, data + prefix_len);
+        fprintf(stderr, "%zd %s\n", len, data + prefix_len);
 
         print_udp_xchange(listen_socket->socketfd, &src_addr, addrlen);
 
-        int res = sendto(listen_socket->socketfd,
+        ssize_t res = sendto(listen_socket->socketfd,
                          data,
                          len + prefix_len,
                          0,

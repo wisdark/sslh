@@ -92,19 +92,15 @@ to the executable:
 
 	sudo setcap cap_net_bind_service,cap_net_raw+pe sslh-select
 
-Then you can run sslh-select as an unpriviledged user, e.g.:
+Then you can run sslh-select as an unprivileged user, e.g.:
 
 	sslh-select -p myname:443 --ssh localhost:22 --tls localhost:443
 
 Transparent proxy support
 -------------------------
 
-Transparent proxying allows the target server to see the
-original client IP address, i.e. `sslh` becomes invisible.
-This makes it easier to use the server's logs, and potential
-IP-based banning ability.
-
-Set up can get complicated, so it has its own [document](tproxy.md).
+Transparent proxying is described in its own
+[document](tproxy.md).
 
 Systemd Socket Activation
 -------------------------
@@ -167,7 +163,7 @@ This parses the /etc/sslh.cfg (or /etc/sslh/sslh.cfg file if that exists
 instead) configuration file and dynamically generates a socket file to use.
 
 This will also merge with any sslh.socket.d drop in configuration but will be 
-overriden by a /etc/systemd/system/sslh.socket file.
+overridden by a /etc/systemd/system/sslh.socket file.
 
 To use the generator place it in /usr/lib/systemd/system-generators and then
 call systemctl daemon-reload after any changes to /etc/sslh.cfg to generate 
@@ -196,7 +192,7 @@ will wait for incoming UDP packets, run the probes in the
 usual fashion, and forward packets to the appropriate
 target. `sslh` will then remember the association between
 remote host to target server for 60 seconds by default,
-which can be overriden with `udp_timeout`. This allows to
+which can be overridden with `udp_timeout`. This allows to
 process both single-datagram protocols such as DNS, and
 connection-based protocols such as QUIC.
 

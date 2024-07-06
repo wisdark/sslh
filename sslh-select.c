@@ -67,7 +67,7 @@ static void watchers_init(watchers** w, struct listen_endpoint* listen_sockets,
 void watchers_add_read(watchers* w, int fd)
 {
     FD_SET(fd, &w->fds_r); 
-    if (fd > w->max_fd)
+    if (fd + 1 > w->max_fd)
         w->max_fd = fd + 1;
 }
 
@@ -148,7 +148,7 @@ void main_loop(struct listen_endpoint listen_sockets[], int num_addr_listen)
 
         print_message(msg_fd, "selecting... max_fd=%d num_probing=%d\n",
                                           fd_info.watchers->max_fd, fd_info.num_probing);
-        res = select(fd_info.watchers->max_fd + 1, &readfds, &writefds,
+        res = select(fd_info.watchers->max_fd, &readfds, &writefds,
                      NULL, fd_info.num_probing ? &tv : NULL);
         if (res < 0)
             perror("select");
@@ -180,9 +180,9 @@ void main_loop(struct listen_endpoint listen_sockets[], int num_addr_listen)
         for (i = 0; i < fd_info.num_probing; i++) {
             struct connection* cnx = gap_get(fd_info.probing_list, i);
             if (!cnx || cnx->state != ST_PROBING) {
-                print_message(msg_int_error, "Inconsistent probing: cnx=%0xp\n", cnx);
+                print_message(msg_int_error, "Inconsistent probing: cnx=0x%p\n", cnx);
                 if (cnx)
-                    print_message(msg_int_error, "Inconsistent probing: state=%d\n", cnx);
+                    print_message(msg_int_error, "Inconsistent probing: state=%d\n", cnx->state);
                 exit(1);
             }
             if (cnx->probe_timeout < time(NULL)) {

@@ -110,7 +110,7 @@ int make_listen_tfo(int s)
     return setsockopt(s, SOL_SOCKET, TCP_FASTOPEN, (char*)&qlen, sizeof(qlen));
 }
 
-/* Starts listening on a single address 
+/* Starts listening on a single address
  * Returns a socket filehandle, or dies with message in case of major error */
 int listen_single_addr(struct addrinfo* addr, int keepalive, int udp)
 {
@@ -262,7 +262,7 @@ int bind_peer(int fd, int fd_from)
     /* if the destination is the same machine, there's no need to do bind */
     if (is_same_machine(&from))
         return 0;
-    
+
 #ifndef IP_BINDANY /* use IP_TRANSPARENT */
     res = setsockopt(fd, IPPROTO_IP, IP_TRANSPARENT, &trans, sizeof(trans));
     CHECK_RES_DIE(res, "setsockopt IP_TRANSPARENT");
@@ -278,7 +278,26 @@ int bind_peer(int fd, int fd_from)
     }
 #endif /* IP_TRANSPARENT / IP_BINDANY */
     res = bind(fd, from.ai_addr, from.ai_addrlen);
-    CHECK_RES_RETURN(res, "bind", res);
+    if (res == -1) {
+        if (errno != EADDRINUSE) {
+            print_message(msg_system_error, "%s:%d:%s:%d:%s\n", __FILE__, __LINE__,
+                        "bind", errno, strerror(errno));
+            return res;
+        }
+
+        /*
+         * If there is more than one transparent mode proxy going on, such as
+         * using sslh as the target of stunnel also in transparent mode, then
+         * the (ip,port) combination will already be bound for the previous application.
+         * In that case, the best we can do is bind with a different port.
+         * This does mean the local server can't use the ident protocol as the port will
+         * have changed, but most people won't care.
+         * Also note that stunnel uses the same logic for the same situation.
+         */
+        ((struct sockaddr_in *)from.ai_addr)->sin_port = 0;
+        res = bind(fd, from.ai_addr, from.ai_addrlen);
+        CHECK_RES_RETURN(res, "bind", res);
+    }
 
     return 0;
 }
@@ -348,6 +367,7 @@ int connect_addr(struct connection *cnx, int fd_from, connect_blocking blocking)
 
             if (transparent) {
                 res = bind_peer(fd, fd_from);
+                if (res == -1) close(fd);
                 CHECK_RES_RETURN(res, "bind_peer", res);
             }
             res = connect(fd, a->ai_addr, a->ai_addrlen);
@@ -371,7 +391,7 @@ int connect_addr(struct connection *cnx, int fd_from, connect_blocking blocking)
 }
 
 /* Store some data to write to the queue later */
-int defer_write(struct queue *q, void* data, int data_size)
+int defer_write(struct queue *q, void* data, ssize_t data_size)
 {
     char *p;
     ptrdiff_t data_offset = q->deferred_data - q->begin_deferred_data;
@@ -383,7 +403,7 @@ int defer_write(struct queue *q, void* data, int data_size)
     q->begin_deferred_data = p;
     q->deferred_data = p + data_offset;
     p += data_offset + q->deferred_data_size;
-    q->deferred_data_size += data_size;
+    q->deferred_data_size += (int)data_size;
     memcpy(p, data, data_size);
 
     return 0;
@@ -395,13 +415,13 @@ int defer_write(struct queue *q, void* data, int data_size)
  * */
 int flush_deferred(struct queue *q)
 {
-    int n;
+    ssize_t n;
 
     print_message(msg_fd, "flushing deferred data to fd %d\n", q->fd);
 
     n = write(q->fd, q->deferred_data, q->deferred_data_size);
     if (n == -1)
-        return n;
+        return (int)n;
 
     if (n == q->deferred_data_size) {
         /* All has been written -- release the memory */
@@ -412,10 +432,10 @@ int flush_deferred(struct queue *q)
     } else {
         /* There is data left */
         q->deferred_data += n;
-        q->deferred_data_size -= n;
+        q->deferred_data_size -= (int)n;
     }
 
-    return n;
+    return (int)n;
 }
 
 
@@ -450,7 +470,8 @@ void dump_connection(struct connection *cnx)
 int fd2fd(struct queue *target_q, struct queue *from_q)
 {
    char buffer[BUFSIZ];
-   int target, from, size_r, size_w;
+   int target, from;
+   ssize_t size_r, size_w;
 
    target = target_q->fd;
    from = from_q->fd;
@@ -462,6 +483,7 @@ int fd2fd(struct queue *target_q, struct queue *from_q)
            return FD_NODATA;
 
        case ECONNRESET:
+       case ENOTSOCK:
        case EPIPE:
            return FD_CNXCLOSED;
        }
@@ -494,7 +516,7 @@ int fd2fd(struct queue *target_q, struct queue *from_q)
 
    CHECK_RES_RETURN(size_w, "write", FD_CNXCLOSED);
 
-   return size_w;
+   return (int)size_w;
 }
 
 /* returns a string that prints the IP and port of the sockaddr */
@@ -529,7 +551,8 @@ char* sprintaddr(char* buf, size_t size, struct addrinfo *a)
 }
 
 /* Turns a hostname and port (or service) into a list of struct addrinfo
- * returns 0 on success, -1 otherwise and logs error
+ * On success, returns 0 
+ * On failure, returns -1 or one of getaddrinfo() codes
  */
 int resolve_split_name(struct addrinfo **out, char* host, char* serv)
 {
@@ -555,7 +578,7 @@ int resolve_split_name(struct addrinfo **out, char* host, char* serv)
 
    res = getaddrinfo(host, serv, &hint, out);
    if (res)
-      print_message(msg_system_error, "%s `%s:%s'\n", gai_strerror(res), host, serv);
+      print_message(msg_system_error, "resolve_split_name: %s `%s:%s'\n", gai_strerror(res), host, serv);
    return res;
 }
 
@@ -831,20 +854,19 @@ void write_pid_file(const char* pidfile)
 
     f = fopen(pidfile, "w");
     if (!f) {
-        print_message(msg_system_error, "write_pid_file:%s:%s", pidfile, strerror(errno));
-        exit(3);
+        print_message(msg_system_error, "write_pid_file: %s: %s\n", pidfile, strerror(errno));
+        return;
     }
 
     res = fprintf(f, "%d\n", getpid());
     if (res < 0) {
-        print_message(msg_system_error, "write_pid_file:fprintf:%s", strerror(errno));
-        exit(3);
+        print_message(msg_system_error, "write_pid_file: fprintf: %s\n", strerror(errno));
+        return;
     }
 
     res = fclose(f);
     if (res == EOF) {
-        print_message(msg_system_error, "write_pid_file:fclose:%s", strerror(errno));
-        exit(3);
+        print_message(msg_system_error, "write_pid_file: fclose: %s\n", strerror(errno));
+        return;
     }
 }
-
