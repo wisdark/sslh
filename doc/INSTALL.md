@@ -30,6 +30,8 @@ Dependencies
 * [libcap](http://packages.debian.org/source/unstable/libcap-dev), in package `libcap-dev`.
   You can compile with or without it using USELIBCAP in the Makefile
 
+* [libconfig++-dev](https://packages.debian.org/bookworm/libconfig++-dev), in package `lìbconfig++-dev`
+    
 * libbsd, to enable to change the process name (as shown in `ps`,
   so each forked process shows what protocol and what connection it is serving),
   which requires `libbsd` at runtime, and `libbsd-dev` at compile-time.
@@ -59,13 +61,18 @@ The test scripts are written in Perl, and will require
 
 Compilation
 -----------
-
-After this, the Makefile should work:
-
-    make install
+First you have to run `./configure`  in the _**./sslh**_ directory. After this, 
+the Makefile is created, and you can do your configuration changes in the Makefile. 
+After each run of ./configure, those changes are gone and the Makefile is recreated.
 
 There are a couple of configuration options at the beginning of the Makefile: 
 
+* `# override undefine HAVE_LANDLOCK` if you uncomment this line, sslh will be compiled
+  without landlock. This works with gcc versions < 12. Otherwise, if your system has
+  linux/landlock.h in the include path, the configure script creates a _**config.h**_ file, 
+  which defines HAVE_LANDLOCK. It is not enough, to set this to 0, you must delete it, 
+  when you don't wish to have landlock in your binary.
+  
 * `USELIBWRAP` compiles support for host access control (see `hosts_access(3)`),
   you will need `libwrap` headers and library to compile (`libwrap0-dev` in Debian).
 
@@ -76,6 +83,14 @@ There are a couple of configuration options at the beginning of the Makefile:
   You will need `systemd` headers to compile (`systemd-devel` in Fedora).
 
 * `USELIBBSD` compiles support for updating the process name (as shown by `ps`).
+
+* `USELIBCAP` compiles support for libcap, which allows to inherit capabilities to 
+  daughter-processes, which run as restricted users. You need this, when you wish to 
+  make sure, that the --user= parameter can be used, without setting capabilities etc.
+  to your binaries, to make this work.
+
+Now you can do either a plain `make` to create the binaries, or you can do an 
+`make install` to create the binaries and install them.
 
 
 Generating the configuration parser

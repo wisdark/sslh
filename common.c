@@ -12,6 +12,7 @@
 #include <sys/types.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
+#include <sys/un.h>
 
 #include "common.h"
 #include "probe.h"
@@ -155,17 +156,76 @@ int listen_single_addr(struct addrinfo* addr, int keepalive, int udp)
     return sockfd;
 }
 
+
+/* Start listening internet sockets for configuration entry 'index' 
+ * OUT: *sockfd[]: pointer to array of listen_endpoint object; we append new
+ * endpoints to that array
+ * IN: num_addr: how many entries are in sockfd[]
+ *     *cfg: configuration data for the endpoint we are adding
+ * Return: new value of num_addr
+ * */
+static int start_listen_inet(struct listen_endpoint *sockfd[], int num_addr, struct sslhcfg_listen_item* cfg)
+{
+    struct addrinfo *addr, *start_addr;
+    char buf[NI_MAXHOST];
+    int res;
+
+    res = resolve_split_name(&start_addr, cfg->host, cfg->port);
+    if (res) exit(4);
+
+    for (addr = start_addr; addr; addr = addr->ai_next) {
+        num_addr++;
+        *sockfd = realloc(*sockfd, num_addr * sizeof(*sockfd[0]));
+        (*sockfd)[num_addr-1].socketfd = listen_single_addr(addr, cfg->keepalive, cfg->is_udp);
+        (*sockfd)[num_addr-1].type = cfg->is_udp ? SOCK_DGRAM : SOCK_STREAM;
+        (*sockfd)[num_addr-1].family = AF_INET;
+        print_message(msg_config, "%d:\t%s\t[%s] [%s]\n", (*sockfd)[num_addr-1].socketfd, sprintaddr(buf, sizeof(buf), addr),
+                      cfg->keepalive ? "keepalive" : "",
+                      cfg->is_udp ? "udp" : "");
+    }
+    freeaddrinfo(start_addr);
+    return num_addr;
+}
+
+/* Same, but for UNIX sockets */
+static int start_listen_unix(struct listen_endpoint *sockfd[], int num_addr, struct sslhcfg_listen_item* cfg)
+{
+    int fd = socket(AF_UNIX, cfg->is_udp ? SOCK_DGRAM : SOCK_STREAM, 0);
+    CHECK_RES_DIE(fd, "socket(AF_UNIX)");
+
+    int res = unlink(cfg->host);
+    if ((res == -1) && (errno != ENOENT)) {
+        print_message(msg_config_error, "unlink unix socket `%s':%d:%s\n", cfg->host, errno, strerror(errno));
+        exit(4);
+    }
+
+    struct sockaddr_un sun;
+    sun.sun_family = AF_UNIX;
+    strncpy(sun.sun_path, cfg->host, sizeof(sun.sun_path)-1);
+    printf("binding [%s]\n", sun.sun_path);
+    res = bind(fd, (struct sockaddr*)&sun, sizeof(sun));
+    CHECK_RES_DIE(res, "bind(AF_UNIX)");
+
+    res = listen(fd, 50);
+
+    num_addr++;
+    *sockfd = realloc(*sockfd, num_addr * sizeof(*sockfd[0]));
+    (*sockfd)[num_addr-1].socketfd = fd;
+    (*sockfd)[num_addr-1].type = cfg->is_udp ? SOCK_DGRAM : SOCK_STREAM;
+    (*sockfd)[num_addr-1].family = AF_INET;
+
+    return num_addr;
+}
+
+
 /* Starts listening sockets on specified addresses.
  * OUT: *sockfd[]  pointer to newly-allocated array of listen_endpoint objects
  * Returns number of addresses bound
    */
 int start_listen_sockets(struct listen_endpoint *sockfd[])
 {
-    struct addrinfo *addr, *start_addr;
-    char buf[NI_MAXHOST];
-    int i, res;
-    int num_addr = 0, keepalive = 0, udp = 0;
-    int sd_socks = 0;
+    int i;
+    int num_addr = 0, sd_socks = 0;
 
     sd_socks = get_fd_sockets(sockfd);
 
@@ -178,22 +238,11 @@ int start_listen_sockets(struct listen_endpoint *sockfd[])
     print_message(msg_config, "Listening to:\n");
 
     for (i = 0; i < cfg.listen_len; i++) {
-        keepalive = cfg.listen[i].keepalive;
-        udp = cfg.listen[i].is_udp;
-
-        res = resolve_split_name(&start_addr, cfg.listen[i].host, cfg.listen[i].port);
-        if (res) exit(4);
-
-        for (addr = start_addr; addr; addr = addr->ai_next) {
-            num_addr++;
-            *sockfd = realloc(*sockfd, num_addr * sizeof(*sockfd[0]));
-            (*sockfd)[num_addr-1].socketfd = listen_single_addr(addr, keepalive, udp);
-            (*sockfd)[num_addr-1].type = udp ? SOCK_DGRAM : SOCK_STREAM;
-            print_message(msg_config, "%d:\t%s\t[%s] [%s]\n", (*sockfd)[num_addr-1].socketfd, sprintaddr(buf, sizeof(buf), addr),
-                          cfg.listen[i].keepalive ? "keepalive" : "",
-                          cfg.listen[i].is_udp ? "udp" : "");
+        if (cfg.listen[i].is_unix) {
+            num_addr = start_listen_unix(sockfd, num_addr, &cfg.listen[i]);
+        } else {
+            num_addr = start_listen_inet(sockfd, num_addr, &cfg.listen[i]);
         }
-        freeaddrinfo(start_addr);
     }
 
     return num_addr;
@@ -243,12 +292,17 @@ int is_same_machine(struct addrinfo* from)
 
 /* Transparent proxying: bind the peer address of fd to the peer address of
  * fd_from */
-#define IP_TRANSPARENT 19
+#ifndef IP_TRANSPARENT
+  #define IP_TRANSPARENT 19
+#endif
+#ifndef IP_BIND_ADDRESS_NO_PORT
+  #define IP_BIND_ADDRESS_NO_PORT 24
+#endif
 int bind_peer(int fd, int fd_from)
 {
     struct addrinfo from;
     struct sockaddr_storage ss;
-    int res, trans = 1;
+    int res, enable = 1, disable = 0;
 
     memset(&from, 0, sizeof(from));
     from.ai_addr = (struct sockaddr*)&ss;
@@ -264,15 +318,17 @@ int bind_peer(int fd, int fd_from)
         return 0;
 
 #ifndef IP_BINDANY /* use IP_TRANSPARENT */
-    res = setsockopt(fd, IPPROTO_IP, IP_TRANSPARENT, &trans, sizeof(trans));
+    res = setsockopt(fd, IPPROTO_IP, IP_TRANSPARENT, &enable, sizeof(enable));
     CHECK_RES_DIE(res, "setsockopt IP_TRANSPARENT");
+    res = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
+    CHECK_RES_DIE(res, "setsockopt SO_REUSEADDR");
 #else
     if (from.ai_addr->sa_family==AF_INET) { /* IPv4 */
-        res = setsockopt(fd, IPPROTO_IP, IP_BINDANY, &trans, sizeof(trans));
+        res = setsockopt(fd, IPPROTO_IP, IP_BINDANY, &enable, sizeof(enable));
         CHECK_RES_RETURN(res, "setsockopt IP_BINDANY", res);
 #ifdef IPV6_BINDANY
     } else { /* IPv6 */
-        res = setsockopt(fd, IPPROTO_IPV6, IPV6_BINDANY, &trans, sizeof(trans));
+        res = setsockopt(fd, IPPROTO_IPV6, IPV6_BINDANY, &enable, sizeof(enable));
         CHECK_RES_RETURN(res, "setsockopt IPV6_BINDANY", res);
 #endif /* IPV6_BINDANY */
     }
@@ -284,19 +340,30 @@ int bind_peer(int fd, int fd_from)
                         "bind", errno, strerror(errno));
             return res;
         }
-
-        /*
-         * If there is more than one transparent mode proxy going on, such as
-         * using sslh as the target of stunnel also in transparent mode, then
-         * the (ip,port) combination will already be bound for the previous application.
-         * In that case, the best we can do is bind with a different port.
-         * This does mean the local server can't use the ident protocol as the port will
-         * have changed, but most people won't care.
-         * Also note that stunnel uses the same logic for the same situation.
-         */
+        res = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &disable, sizeof(disable));
+        CHECK_RES_DIE(res, "setsockopt SO_REUSEADDR");
+        res = setsockopt(fd, IPPROTO_IP, IP_BIND_ADDRESS_NO_PORT, &enable, sizeof(enable));
+        CHECK_RES_RETURN(res, "setsockopt IP_BIND_ADDRESS_NO_PORT", res);
         ((struct sockaddr_in *)from.ai_addr)->sin_port = 0;
         res = bind(fd, from.ai_addr, from.ai_addrlen);
         CHECK_RES_RETURN(res, "bind", res);
+        /*
+	 * There was a serious problem, when daisy-chaining programs using the same
+	 * ip transparent mechanism, as sslh uses. stunnel was mentioned in a previous 
+	 * comment. This problem should now be solved through the two methods, getting
+	 * a connection established:
+	 * In the first try, SO_REUSEADDR is set to socket, which will allow the same
+	 * IP-address:port tuple, as it is used by another application. The check for
+	 * inconsistency with other connections (same 4-value-tupel) is done at the 
+	 * moment, when the connection gets established.
+	 * If that fails, SO_REUSEADDR gets removed and IP_BIND_ADDRESS_NO_PORT get set.
+	 * This will search for a free port, which will not collide with current 
+	 * connections. Read more in this excellent blog-post: 
+	 * https://blog.cloudflare.com/how-to-stop-running-out-of-ephemeral-ports-and-start-to-love-long-lived-connections
+	 * The problem will still appear, if the another application in the daisy-chain
+	 * does not use similar mechanisms. In that case you must either pull this 
+	 * application at the beginning of the chain, or get it fixed.
+         */
     }
 
     return 0;
@@ -319,11 +386,8 @@ int set_nonblock(int fd)
 }
 
 
-/* Connect to first address that works and returns a file descriptor, or -1 if
- * none work.
- * If transparent proxying is on, use fd_from peer address on external address
- * of new file descriptor. */
-int connect_addr(struct connection *cnx, int fd_from, connect_blocking blocking)
+/* Connects to INET/INET6 domain sockets and return a fd */
+static int connect_inet(struct connection *cnx, int fd_from, connect_blocking blocking)
 {
     struct addrinfo *a, from;
     struct sockaddr_storage ss;
@@ -342,7 +406,6 @@ int connect_addr(struct connection *cnx, int fd_from, connect_blocking blocking)
         resolve_split_name(&(cnx->proto->saddr), cnx->proto->host,
                            cnx->proto->port);
     }
-
     for (a = cnx->proto->saddr; a; a = a->ai_next) {
         /* When transparent, make sure both connections use the same address family */
         if (transparent && a->ai_family != from.ai_addr->sa_family)
@@ -388,6 +451,42 @@ int connect_addr(struct connection *cnx, int fd_from, connect_blocking blocking)
         }
     }
     return -1;
+}
+
+/* Connects to AF_UNIX domain sockets */
+static int connect_unix(struct connection *cnx, int fd_from, connect_blocking blocking)
+{
+    struct sockaddr_storage ss;
+    struct sockaddr_un* sun = (struct sockaddr_un*)&ss;
+
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    sun->sun_family = AF_UNIX;
+    strncpy(sun->sun_path, cnx->proto->host, sizeof(sun->sun_path)-1);
+
+    int res = connect(fd, (struct sockaddr*)sun, sizeof(*sun));
+    CHECK_RES_RETURN(res, "connect", res);
+
+    if (blocking == NON_BLOCKING) {
+        set_nonblock(fd);
+    }
+    return fd;
+}
+
+/* Connect to first address that works and returns a file descriptor, or -1 if
+ * none work.
+ * If transparent proxying is on, use fd_from peer address on external address
+ * of new file descriptor. */
+int connect_addr(struct connection *cnx, int fd_from, connect_blocking blocking)
+{
+    int fd;
+
+    if (cnx->proto->is_unix) {
+        fd = connect_unix(cnx, fd_from, blocking);
+    } else {
+        fd = connect_inet(cnx, fd_from, blocking);
+    }
+
+    return fd;
 }
 
 /* Store some data to write to the queue later */
@@ -524,6 +623,9 @@ char* sprintaddr(char* buf, size_t size, struct addrinfo *a)
 {
    char host[NI_MAXHOST], serv[NI_MAXSERV];
    int res;
+
+   memset(host, 0, sizeof(host));
+   memset(serv, 0, sizeof(serv));
 
    res = getnameinfo(a->ai_addr, a->ai_addrlen,
                host, sizeof(host),

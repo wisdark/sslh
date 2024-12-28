@@ -3,7 +3,9 @@ VERSION=$(shell ./genver.sh -r)
 
 # Configuration -- you probably need to `make clean` if you
 # change any of these
-# landlock is checked by `configure` and set in config.h
+
+# uncomment the following line to disable landlock
+# override undefine HAVE_LANDLOCK
 ENABLE_SANITIZER= # Enable ASAN/LSAN/UBSAN
 ENABLE_REGEX=1  # Enable regex probes
 USELIBCONFIG=1	# Use libconfig? (necessary to use configuration files)
@@ -86,8 +88,9 @@ all: sslh-fork sslh-select $(MAN) echosrv $(CONDITIONAL_TARGETS)
 $(OBJS_A): $(OBJS)
 	$(AR) rcs $(OBJS_A) $(OBJS)
 
-version.h:
+version.h: .FORCE
 	./genver.sh >version.h
+.FORCE:	
 
 $(OBJS) $(FORK_OBJS) $(SELECT_OBJS) $(EV_OBJS): argtable3.h collection.h common.h gap.h hash.h log.h probe.h processes.h sslh-conf.h tcp-listener.h tcp-probe.h tls.h udp-listener.h version.h
 
@@ -126,7 +129,7 @@ $(MAN): sslh.pod Makefile
 # Create release: export clean tree and tag current
 # configuration
 release:
-	git archive master --prefix="sslh-$(VERSION)/" | gzip > /tmp/sslh-$(VERSION).tar.gz
+	git archive $(VERSION) --prefix="sslh-$(VERSION)/" | gzip > /tmp/sslh-$(VERSION).tar.gz
 	gpg --detach-sign --armor /tmp/sslh-$(VERSION).tar.gz
 
 # Build docker image
@@ -160,6 +163,7 @@ distclean: clean
 
 clean:
 	rm -f sslh-fork sslh-select $(CONDITIONAL_TARGETS) echosrv version.h $(MAN) systemd-sslh-generator *.o *.gcov *.gcno *.gcda *.png *.html *.css *.info
+	echo "// this is a placeholder for version.h, to make code-checking editors happy" > version.h
 
 tags:
 	ctags --globals -T *.[ch]

@@ -67,13 +67,17 @@ static void printsettings(void)
     
     for (i = 0; i < cfg.protocols_len; i++ ) {
         p = &cfg.protocols[i];
-        strcpy(buf, "resolve on forward");
-        if (!p->resolve_on_forward) {
-            sprintaddr(buf, sizeof(buf), p->saddr);
-            size_t len = strlen(buf);
-            sprintf(buf+len, " family %d %d", 
-                    p->saddr->ai_family,
-                    p->saddr->ai_addr->sa_family);
+        if (p->is_unix) {
+            sprintf(buf, "unix socket: %s", p->host);
+        } else {
+            strcpy(buf, "resolve on forward");
+            if (!p->resolve_on_forward) {
+                sprintaddr(buf, sizeof(buf), p->saddr);
+                size_t len = strlen(buf);
+                sprintf(buf+len, " family %d %d",
+                        p->saddr->ai_family,
+                        p->saddr->ai_addr->sa_family);
+            }
         }
         print_message(msg_config, 
                       "%s addr: %s. libwrap service: %s log_level: %d [%s] [%s] [%s]\n",
@@ -149,6 +153,15 @@ void config_finish(struct sslhcfg_item* cfg)
     }
 }
 
+/* Checks that the UNIX socket specified exists and is accessible
+ * Dies otherwise
+ */
+static void check_access_unix_socket(struct sslhcfg_protocols_item* p)
+{
+    /* TODO */
+    return;
+}
+
 
 /* For each protocol in the configuration, resolve address and set up protocol
  * options if required
@@ -159,7 +172,9 @@ static void config_protocols()
     for (i = 0; i < cfg.protocols_len; i++) {
         struct sslhcfg_protocols_item* p = &(cfg.protocols[i]);
 
-        if (
+        if (p->is_unix) {
+            check_access_unix_socket(p);
+        } else if (
             !p->resolve_on_forward &&
             resolve_split_name(&(p->saddr), p->host, p->port)
         ) {
@@ -240,6 +255,24 @@ void config_sanity_check(struct sslhcfg_item* cfg)
     }
 }
 
+/* Connect stdin, stdout, stderr to /dev/null. It is better to keep them around
+ * so they do not get re-used by socket descriptors, and accidently used by
+ * some library code.
+ */
+void close_std(void)
+{
+    int newfd;
+
+    if ((newfd = open("/dev/null", O_RDWR))) {
+        dup2 (newfd, STDIN_FILENO);
+        dup2 (newfd, STDOUT_FILENO);
+        dup2 (newfd, STDERR_FILENO);
+        /* close the helper handle, as this is now unnecessary */
+        close(newfd);
+    } else {
+        print_message(msg_system_error, "Error closing standard filehandles for background daemon\n");
+    }
+}
 
 int main(int argc, char *argv[], char* envp[])
 {
@@ -287,6 +320,7 @@ int main(int argc, char *argv[], char* envp[])
 
    if (!cfg.foreground) {
        if (fork() > 0) exit(0); /* Detach */
+       close_std();
 
        /* New session -- become group leader */
        if (getuid() == 0) {
